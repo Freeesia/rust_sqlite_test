@@ -1,5 +1,5 @@
 [package]
-name = "rust_sq_lite_test"
+name = "rust_sqlite_test"
 version = "0.1.0"
 edition = "2021"
 
