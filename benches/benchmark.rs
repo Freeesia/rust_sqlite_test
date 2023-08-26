@@ -50,42 +50,50 @@ async fn fetch_data_from_table(flags: OpenFlags, table_name: String) -> Result<V
 
 fn parallel_fetch_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("SQLite Mutex Benchmark");
+    let rt = tokio::runtime::Runtime::new().unwrap();
 
     let conn = setup_db().expect("Failed to setup database");
-    let default_frag = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI;
+    let flags_with_mutex = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI;
+    let flags_without_mutex = flags_with_mutex | OpenFlags::SQLITE_OPEN_NO_MUTEX;
 
-    for &use_nomutex in &[false, true] {
-        let flags = if use_nomutex {
-            default_frag | OpenFlags::SQLITE_OPEN_NO_MUTEX
-        } else {
-            default_frag
-        };
-
-        group.bench_with_input(
-            BenchmarkId::from_parameter(use_nomutex),
-            &flags,
-            |b, &flags| {
-                b.iter(|| {
-                    let runtime = tokio::runtime::Runtime::new().unwrap();
-                    runtime.block_on(async {
-                        let tasks: Vec<_> = (0..10)
-                            .map(|_| {
-                                task::spawn(async move {
-                                    fetch_data_from_table(flags, "table1".to_string())
-                                        .await
-                                        .expect("Failed to fetch data")
-                                })
-                            })
-                            .collect();
-
-                        let results: Vec<_> = join_all(tasks).await;
-                        for result in results {
-                            result.expect("Task panicked");
-                        }
-                    });
+    for &n in &[10, 50, 100] {
+        group.bench_with_input(BenchmarkId::new("With Mutex", n), &n, |b, &n| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let mut handles = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        let handle = task::spawn(fetch_data_from_table(
+                            flags_with_mutex,
+                            "table1".to_string(),
+                        ));
+                        handles.push(handle);
+                    }
+                    let results: Vec<_> = join_all(handles).await;
+                    for result in results {
+                        let _ = result.expect("Task panicked");
+                    }
                 })
-            },
-        );
+            })
+        });
+
+        group.bench_with_input(BenchmarkId::new("Without Mutex", n), &n, |b, &n| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let mut handles = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        let handle = task::spawn(fetch_data_from_table(
+                            flags_without_mutex,
+                            "table1".to_string(),
+                        ));
+                        handles.push(handle);
+                    }
+                    let results: Vec<_> = join_all(handles).await;
+                    for result in results {
+                        let _ = result.expect("Task panicked");
+                    }
+                })
+            })
+        });
     }
 
     group.finish();
