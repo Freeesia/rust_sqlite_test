@@ -10,24 +10,22 @@ fn setup_db() -> Result<Connection> {
         MEMORY_DB_URI,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI,
     )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS table1 (id INTEGER PRIMARY KEY, data TEXT NOT NULL)",
-        params![],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS table2 (id INTEGER PRIMARY KEY, data TEXT NOT NULL)",
-        params![],
-    )?;
 
-    for i in 0..10000 {
+    for t in 0..10 {
         conn.execute(
-            "INSERT INTO table1 (data) VALUES (?1)",
-            params![format!("data{}", i)],
+            &format!(
+                "CREATE TABLE IF NOT EXISTS table{} (id INTEGER PRIMARY KEY, data TEXT NOT NULL)",
+                t
+            ),
+            params![],
         )?;
-        conn.execute(
-            "INSERT INTO table2 (data) VALUES (?1)",
-            params![format!("data{}", i)],
-        )?;
+
+        for i in 0..10000 {
+            conn.execute(
+                &format!("INSERT INTO table{} (data) VALUES (?)", t),
+                params![format!("{}-{}", t, i)],
+            )?;
+        }
     }
 
     Ok(conn)
@@ -57,7 +55,7 @@ fn parallel_fetch_benchmark(c: &mut Criterion) {
     let flags_without_mutex = flags_with_mutex | OpenFlags::SQLITE_OPEN_NO_MUTEX;
 
     for &n in &[10, 50, 100] {
-        group.bench_with_input(BenchmarkId::new("With Mutex", n), &n, |b, &n| {
+        group.bench_with_input(BenchmarkId::new("With Mutex 1", n), &n, |b, &n| {
             b.iter(|| {
                 rt.block_on(async {
                     let mut handles = Vec::with_capacity(n);
@@ -76,7 +74,7 @@ fn parallel_fetch_benchmark(c: &mut Criterion) {
             })
         });
 
-        group.bench_with_input(BenchmarkId::new("Without Mutex", n), &n, |b, &n| {
+        group.bench_with_input(BenchmarkId::new("Without Mutex 1", n), &n, |b, &n| {
             b.iter(|| {
                 rt.block_on(async {
                     let mut handles = Vec::with_capacity(n);
@@ -84,6 +82,44 @@ fn parallel_fetch_benchmark(c: &mut Criterion) {
                         let handle = task::spawn(fetch_data_from_table(
                             flags_without_mutex,
                             "table1".to_string(),
+                        ));
+                        handles.push(handle);
+                    }
+                    let results: Vec<_> = join_all(handles).await;
+                    for result in results {
+                        let _ = result.expect("Task panicked");
+                    }
+                })
+            })
+        });
+
+        group.bench_with_input(BenchmarkId::new("With Mutex 10", n), &n, |b, &n| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let mut handles = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        let handle = task::spawn(fetch_data_from_table(
+                            flags_with_mutex,
+                            format!("table{}", n % 10),
+                        ));
+                        handles.push(handle);
+                    }
+                    let results: Vec<_> = join_all(handles).await;
+                    for result in results {
+                        let _ = result.expect("Task panicked");
+                    }
+                })
+            })
+        });
+
+        group.bench_with_input(BenchmarkId::new("Without Mutex 10", n), &n, |b, &n| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let mut handles = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        let handle = task::spawn(fetch_data_from_table(
+                            flags_without_mutex,
+                            format!("table{}", n % 10),
                         ));
                         handles.push(handle);
                     }
