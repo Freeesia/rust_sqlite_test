@@ -1,15 +1,16 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use futures::future::join_all;
+use once_cell::sync::Lazy;
 use rusqlite::{params, Connection, OpenFlags, Result};
 use tokio::task;
+use uuid::Uuid;
 
-const MEMORY_DB_URI: &str = "file::memory:?cache=shared";
+static MEMORY_DB_URI: Lazy<String> =
+    Lazy::new(|| format!("/tmp/{}.sqlite3", Uuid::new_v4().to_string()));
 
 fn setup_db() -> Result<Connection> {
-    let conn = Connection::open_with_flags(
-        MEMORY_DB_URI,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI,
-    )?;
+    println!("Creating database at {}", *MEMORY_DB_URI);
+    let mut conn = Connection::open_with_flags(&*MEMORY_DB_URI, OpenFlags::default())?;
 
     for t in 0..10 {
         conn.execute(
@@ -20,12 +21,14 @@ fn setup_db() -> Result<Connection> {
             params![],
         )?;
 
+        let tx = conn.transaction()?;
         for i in 0..10000 {
-            conn.execute(
+            tx.execute(
                 &format!("INSERT INTO table{} (data) VALUES (?)", t),
                 params![format!("{}-{}", t, i)],
             )?;
         }
+        tx.commit()?;
     }
 
     Ok(conn)
@@ -34,8 +37,8 @@ fn setup_db() -> Result<Connection> {
 async fn fetch_data_from_table(flags: OpenFlags, table_name: String) -> Result<Vec<String>> {
     // let current_thread = std::thread::current();
     // let thread_id = current_thread.id();
-    // println!("Current thread ID: {:?}", thread_id);
-    let conn = Connection::open_with_flags(MEMORY_DB_URI, flags)?;
+    // println!("Start thread ID: {:?}", thread_id);
+    let conn = Connection::open_with_flags(&*MEMORY_DB_URI, flags)?;
 
     let mut stmt = conn.prepare(&format!("SELECT data FROM {}", table_name))?;
     let rows = stmt.query_map(params![], |row| row.get(0))?;
@@ -43,6 +46,7 @@ async fn fetch_data_from_table(flags: OpenFlags, table_name: String) -> Result<V
     for row in rows {
         data.push(row?);
     }
+    // println!("End thread ID: {:?}", thread_id);
     Ok(data)
 }
 
